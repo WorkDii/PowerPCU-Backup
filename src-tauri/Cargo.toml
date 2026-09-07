@@ -1,0 +1,43 @@
+[package]
+name = "powerpcu-backup"
+version = "2.0.0"
+edition = "2021"
+description = "PowerPCU Backup v2 — MySQL (JHCIS) backup service + GUI"
+
+[lib]
+name = "powerpcu_backup"
+path = "src/lib.rs"
+
+[[bin]]
+name = "powerpcu-backup"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "fs", "time", "net"] }
+axum = "0.8"
+rust-embed = "8"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tokio-cron-scheduler = "0.15"
+uuid = { version = "1", features = ["v4"] }
+# Zstd + AES-256 zip, no 7-Zip binary. Same crate/feature set the POC shipped.
+zip = { version = "2", default-features = false, features = ["zstd", "aes-crypto", "deflate"] }
+# Official SDK (rust-s3's header-signed DELETE is rejected by Ceph RadosGW). rustls+ring only.
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio"] }
+aws-smithy-http-client = { version = "1", default-features = false, features = ["rustls-ring"] }
+# DPAPI for secrets at rest.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+base64 = "0.23"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["chrono"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"
