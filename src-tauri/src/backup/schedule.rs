@@ -69,12 +69,17 @@ pub async fn register_plan(state: &AppState, plan: &Plan) {
     }
 }
 
+/// Removes the job from the running scheduler, then drops its id from the map. If
+/// the scheduler-side removal fails, the map entry is left in place (not lost) so a
+/// later call can retry rather than orphaning a job the map no longer tracks.
 pub async fn unregister_plan(id: i64) {
     let Some(handle) = HANDLE.get() else { return };
-    if let Some(job_id) = handle.jobs.lock().await.remove(&id) {
-        if let Err(e) = handle.scheduler.remove(&job_id).await {
-            tracing::error!(plan = id, "scheduler: remove failed: {e}");
+    let Some(job_id) = handle.jobs.lock().await.get(&id).copied() else { return };
+    match handle.scheduler.remove(&job_id).await {
+        Ok(()) => {
+            handle.jobs.lock().await.remove(&id);
         }
+        Err(e) => tracing::error!(plan = id, "scheduler: remove failed: {e}"),
     }
 }
 
