@@ -70,10 +70,12 @@ impl S3Provider {
         format!("s3://{}/{}", self.cfg.bucket, key)
     }
 
-    /// Recover the object key from a stored `s3://bucket/key` location.
-    fn key_from_location(&self, location: &str) -> String {
+    /// Recover the object key from a stored `s3://bucket/key` location, or `None`
+    /// if the location isn't under this provider's current bucket (e.g. the
+    /// storage's bucket was changed since the copy was written).
+    fn key_from_location(&self, location: &str) -> Option<String> {
         let p = format!("s3://{}/", self.cfg.bucket);
-        location.strip_prefix(&p).unwrap_or(location).to_string()
+        location.strip_prefix(&p).map(str::to_string)
     }
 
     /// Stream the local `.zip` up to `prefix + rel`; returns the location.
@@ -98,8 +100,14 @@ impl S3Provider {
     /// Delete one stored copy by its recorded `s3://bucket/key` location. The SDK
     /// returns `Err` on any non-2xx, so a rejected delete is a real error (it won't
     /// be falsely marked deleted). A missing key is success on S3 (idempotent).
+    ///
+    /// A location outside the current bucket (the storage's bucket changed since
+    /// the copy was written) is rejected before touching the network — guessing a
+    /// key against the wrong bucket could delete an unrelated object.
     pub async fn delete(&self, location: &str) -> Result<(), String> {
-        let key = self.key_from_location(location);
+        let Some(key) = self.key_from_location(location) else {
+            return Err(format!("ตำแหน่งไฟล์ไม่ตรงกับ bucket ปัจจุบัน: {location}"));
+        };
         self.client()
             .delete_object()
             .bucket(&self.cfg.bucket)
@@ -174,6 +182,7 @@ mod tests {
         assert_eq!(key, "inspace_cloud/jhcis_db_2601010000.sql.zip");
         let loc = p.location(&key);
         assert_eq!(loc, "s3://test/inspace_cloud/jhcis_db_2601010000.sql.zip");
-        assert_eq!(p.key_from_location(&loc), key, "delete must recover the exact key");
+        assert_eq!(p.key_from_location(&loc), Some(key), "delete must recover the exact key");
+        assert_eq!(p.key_from_location("s3://other-bucket/inspace_cloud/x.zip"), None, "a different bucket must not match");
     }
 }

@@ -30,6 +30,7 @@ pub struct LiveFile {
     pub id: i64,
     pub created_at: String,
     pub location: String,
+    pub provider: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -42,7 +43,7 @@ pub async fn record(pool: &Pool, run_id: i64, plan_id: i64, storage_id: i64, pro
 
 /// Not-yet-deleted copies of one plan on one storage, newest first.
 pub async fn live_for(pool: &Pool, plan_id: i64, storage_id: i64) -> Result<Vec<LiveFile>, sqlx::Error> {
-    sqlx::query_as::<_, LiveFile>("SELECT id, created_at, location FROM backup_files WHERE plan_id = ? AND storage_id = ? AND deleted_at IS NULL ORDER BY created_at DESC, id DESC")
+    sqlx::query_as::<_, LiveFile>("SELECT id, created_at, location, provider FROM backup_files WHERE plan_id = ? AND storage_id = ? AND deleted_at IS NULL ORDER BY created_at DESC, id DESC")
         .bind(plan_id).bind(storage_id).fetch_all(pool).await
 }
 
@@ -83,6 +84,10 @@ pub async fn apply_prune(pool: &Pool, plan: &Plan, storage: &Storage, now: Naive
     let mut deleted = 0;
     for id in decision.delete {
         let Some(file) = live.iter().find(|f| f.id == id) else { continue };
+        if file.provider != storage.config.provider_str() {
+            tracing::warn!(plan = plan.id, storage = storage.id, location = %file.location, "retention: provider changed since this copy was stored; leaving it");
+            continue;
+        }
         match provider.delete(&file.location).await {
             Ok(()) => {
                 mark_deleted(pool, id).await.map_err(|e| e.to_string())?;
@@ -163,6 +168,36 @@ mod tests {
         let kept = kept_as(&pool, &plan_a, sid, now).await.unwrap();
         assert_eq!(kept.len(), 1);
         assert!(kept.values().next().unwrap().contains(&Reason::Daily));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn apply_prune_leaves_row_whose_provider_no_longer_matches_storage() {
+        use crate::backup::plans::NewPlan;
+        let pool = crate::db::open_memory().await;
+        let dir = std::env::temp_dir().join(format!("ppb-prune-provider-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sid = crate::backup::storages::insert(&pool, "local", "local", &format!(r#"{{"path":{}}}"#, serde_json::to_string(&dir.to_string_lossy()).unwrap())).await.unwrap();
+        let storage = crate::backup::storages::find(&pool, sid).await.unwrap().unwrap();
+        let np = NewPlan { name: "a".into(), database_name: "db".into(), host: "h".into(), port: 1, username: "u".into(), password: "p".into(), prefix_name: "pre".into(), encryption_password: "e".into(), schedule_cron: None, active: true, catch_up: true, keep_daily: 1, keep_weekly: 0, keep_monthly: 0, keep_yearly: 0, storage_ids: vec![], copy_password_from_plan_id: None };
+        let plan_id = crate::backup::plans::insert(&pool, &np).await.unwrap();
+        let plan = crate::backup::plans::find(&pool, plan_id).await.unwrap().unwrap();
+
+        // Old copy was written when this storage was still s3; the storage's config
+        // has since been changed to local (same row id, different provider).
+        record(&pool, 1, plan_id, sid, "s3", "s3://old/x.zip", 1, "2026-09-01 03:30:00").await.unwrap();
+        let new_zip = dir.join("new.zip");
+        std::fs::write(&new_zip, b"x").unwrap();
+        record(&pool, 2, plan_id, sid, "local", &new_zip.to_string_lossy(), 1, "2026-09-02 03:30:00").await.unwrap();
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 9, 7).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        // keep_daily = 1 keeps only the newer (local) day-bucket, so the s3 row is
+        // the one prune wants to delete — but its provider no longer matches.
+        let deleted = apply_prune(&pool, &plan, &storage, now).await.unwrap();
+        assert_eq!(deleted, 0, "a provider mismatch must not count as a deletion");
+
+        let live = live_for(&pool, plan_id, sid).await.unwrap();
+        assert!(live.iter().any(|f| f.location == "s3://old/x.zip"), "the s3 row must stay live, not be silently deleted through the local provider");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

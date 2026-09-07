@@ -298,7 +298,7 @@ pub fn decide(files: &[Candidate], keep: &Keep, now: NaiveDateTime) -> Decision
 - cron ผิดรูป → log แล้วข้าม plan นั้น (UI กันไว้ก่อนแล้ว)
 - overlap ต่อ plan: `try_lock` (§6 ข้อ 1)
 - `next_run_at` ต่อ plan อ่านจาก `scheduler.next_tick_for_job(uuid)` ให้ `/api/status`
-- **catch-up**: หลัง register ตอน boot ต่อ plan ที่ `active && catch_up && schedule_cron IS NOT NULL`: ถ้าไม่มี `runs` ที่ `status IN ('ok','partial')` และ `started_at > now - 24h` → spawn รันหลัง `120 + 30*i` วินาที (`trigger='catch_up'`)
+- **catch-up**: หลัง register ตอน boot ต่อ plan ที่ `active && catch_up && schedule_cron IS NOT NULL`: ถ้าไม่มี `runs` ที่ `status IN ('ok','partial')` และ `started_at > now - 24h` → spawn รันหลัง `120 + 30*i` วินาที (`trigger='catch_up'`) ก่อนรัน catch-up จะเช็ก `needs_catch_up` ซ้ำอีกครั้ง เผื่อ tick ปกติยิงไปแล้วระหว่างรอ
 
 ## 9. Storage providers (`backup/storage/`)
 
@@ -313,7 +313,7 @@ pub trait Provider {
 
 - config JSON: local `{"path":"D:\\backup"}`; s3 `{"endpoint","region","bucket","access_key","secret_key","prefix","path_style"}` `secret_key` เก็บเป็น `dpapi:<base64>`
 - **local**: `create_dir_all(<path>\<prefix>\<db>)` + `fs::copy`; `test()` = สร้างโฟลเดอร์ + เขียน/ลบไฟล์ probe รองรับ UNC แต่ service ต้องรันด้วยบัญชีที่เข้า share ได้ (ตั้ง `nssm set PowerPCU-Backup ObjectName …`) เขียนไว้ใน README
-- **s3**: `aws-sdk-s3` + `aws-smithy-http-client` rustls/ring (ยกจาก POC ทั้งไฟล์) จุดสำคัญที่ห้ามตัด: `RequestChecksumCalculation::WhenRequired` + `ResponseChecksumValidation::WhenRequired` (MinIO/Ceph/R2 ไม่รับ aws-chunked), `force_path_style` ตาม config, region ว่าง = `us-east-1`, ใช้ SDK ทางการไม่ใช่ `rust-s3` (RadosGW ปฏิเสธ DELETE ของ rust-s3); `test()` = `list_objects_v2(max_keys=1)`; `store` = `put_object` จาก `ByteStream::from_path`
+- **s3**: `aws-sdk-s3` + `aws-smithy-http-client` rustls/ring (ยกจาก POC ทั้งไฟล์) จุดสำคัญที่ห้ามตัด: `RequestChecksumCalculation::WhenRequired` + `ResponseChecksumValidation::WhenRequired` (MinIO/Ceph/R2 ไม่รับ aws-chunked), `force_path_style` ตาม config, region ว่าง = `us-east-1`, ใช้ SDK ทางการไม่ใช่ `rust-s3` (RadosGW ปฏิเสธ DELETE ของ rust-s3); `test()` = put + delete ของ object `.powerpcu_probe` (ตรวจสิทธิ์เขียนที่การสำรองต้องใช้); `store` = `put_object` จาก `ByteStream::from_path`
 
 ## 10. API (axum, `127.0.0.1:8720`)
 

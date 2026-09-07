@@ -200,8 +200,12 @@ mod tests {
         // keep_daily=1 keeps exactly one live row, and the (overwritten) file still exists
         let out2 = run_backup(&state, &plan, "manual").await;
         assert_eq!(out2.status, "ok");
-        assert_eq!(files::live_for(&state.pool, plan.id, files[0].storage_id).await.unwrap().len(), 1);
-        assert!(loc.exists(), "prune must not delete the freshly overwritten file");
+        let live = files::live_for(&state.pool, plan.id, files[0].storage_id).await.unwrap();
+        assert_eq!(live.len(), 1);
+        // Same-minute runs share a file name, so if the clock rolled over to a new
+        // minute between the two runs, the surviving row points at a different file
+        // than `loc` — check the row's own location, not the first run's `loc`.
+        assert!(std::path::Path::new(&live[0].location).exists(), "prune must not delete the file the surviving row points at");
         let _ = std::fs::remove_dir_all(&work);
     }
 

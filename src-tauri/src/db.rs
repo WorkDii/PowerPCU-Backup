@@ -9,7 +9,10 @@ pub type Pool = SqlitePool;
 /// Open (creating if missing) the SQLite file at `path`. `filename()` avoids URL
 /// parsing of Windows drive letters.
 pub async fn open(path: &Path) -> Result<Pool, sqlx::Error> {
-    let options = SqliteConnectOptions::new().filename(path).create_if_missing(true);
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
     SqlitePoolOptions::new().max_connections(5).connect_with(options).await
 }
 

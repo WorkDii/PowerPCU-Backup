@@ -23,6 +23,14 @@ pub fn to_scheduler_expr(five_field: &str) -> String {
     format!("0 {}", five_field.trim())
 }
 
+/// Validate a 5-field cron expression without a running scheduler: building a
+/// throwaway `Job` parses the expression the same way `register_plan` will.
+pub fn parse_cron(five_field: &str) -> Result<(), String> {
+    Job::new_async_tz(to_scheduler_expr(five_field).as_str(), Local, |_id, _l| Box::pin(async {}))
+        .map(|_| ())
+        .map_err(|e| format!("รูปแบบ cron ไม่ถูกต้อง: {e}"))
+}
+
 fn is_scheduled(plan: &Plan) -> bool {
     plan.active && plan.schedule_cron.as_deref().map(|c| !c.trim().is_empty()).unwrap_or(false)
 }
@@ -117,6 +125,13 @@ pub async fn catch_up(state: AppState) {
         let st = state.clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
+            // A scheduled tick may have fired during the delay — re-check before running.
+            let last = runs::last_success_at(&st.pool, plan.id).await.ok().flatten()
+                .and_then(|s| NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S").ok());
+            if !needs_catch_up(last, Local::now().naive_local()) {
+                tracing::info!(plan = plan.id, "catch-up: a regular tick already ran during the delay, skipping");
+                return;
+            }
             run::run_backup(&st, &plan, "catch_up").await;
         });
     }
@@ -145,12 +160,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_cron_does_not_panic_and_no_next_run() {
-        // HANDLE is unset in unit tests → register is a no-op and next_run_at is None.
-        let pool = crate::db::open_memory().await;
-        let state = AppState::new(pool, "x".into(), std::env::temp_dir());
-        let plan = Plan { id: 1, name: "p".into(), database_name: "d".into(), host: "h".into(), port: 1, username: "u".into(), password: "p".into(), prefix_name: "x".into(), encryption_password: "e".into(), schedule_cron: Some("not a cron".into()), active: true, catch_up: true, keep_daily: 1, keep_weekly: 0, keep_monthly: 0, keep_yearly: 0, created_at: "".into() };
-        register_plan(&state, &plan).await;
+    async fn parse_cron_accepts_valid_rejects_invalid() {
+        assert!(parse_cron("30 3 * * *").is_ok());
+        assert!(parse_cron("0 20 * * 0").is_ok());
+        assert!(parse_cron("not a cron").is_err());
+        assert!(parse_cron("99 99 * * *").is_err());
+        // HANDLE is unset in unit tests → next_run_at is None regardless of cron validity.
         assert!(next_run_at(1).await.is_none());
     }
 }

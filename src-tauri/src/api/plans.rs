@@ -26,6 +26,7 @@ fn validate(p: &NewPlan) -> Result<(), String> {
         if c.split_whitespace().count() != 5 {
             return Err("รูปแบบ cron ต้องมี 5 ช่อง (นาที ชั่วโมง วันที่ เดือน วันในสัปดาห์)".into());
         }
+        crate::backup::schedule::parse_cron(c)?;
     }
     Ok(())
 }

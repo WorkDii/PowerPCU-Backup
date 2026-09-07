@@ -19,6 +19,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let data = paths::data_dir();
     std::fs::create_dir_all(&data)?;
+    // Nothing can still be running at boot, so any leftovers from a crash/kill (multi-GB .sql, probe_*.sql) are stale — wipe them.
+    let _ = std::fs::remove_dir_all(paths::temp_dir());
     std::fs::create_dir_all(paths::temp_dir())?;
     let db_path = paths::db_path();
     let pool = db::open(&db_path).await?;

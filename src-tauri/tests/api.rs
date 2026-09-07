@@ -87,6 +87,11 @@ async fn full_flow_storage_plan_run_history() {
     bad["database_name"] = json!("../x");
     let (_, v) = call(app, "POST", "/api/plans", Some(bad)).await;
     assert_eq!(v["ok"], false);
+    let mut bad = plan_body("x", "10999", vec![sid]);
+    bad["schedule_cron"] = json!("99 99 * * *");
+    let (_, v) = call(app, "POST", "/api/plans", Some(bad)).await;
+    assert_eq!(v["ok"], false);
+    assert!(v["message"].as_str().unwrap().contains("cron"), "{v}");
 
     // plan ok, masked on read
     let (_, v) = call(app, "POST", "/api/plans", Some(plan_body("รพ.สต.", "10999", vec![sid]))).await;
