@@ -1,10 +1,6 @@
-.env
-.env.build
-.env.s3
-
-local_backup
-
-config.*
-build
-decryptData
-config_file
+src-tauri/target/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.superpowers/
