@@ -76,14 +76,13 @@ pub fn error_message(e: DumpError) -> String {
 }
 
 /// Test helper: a `.cmd` standing in for mysqldump. Writes `-- fake dump` to `sql_out`
-/// (ignoring `--result-file`), prints `stderr` to stderr, exits `exit_code`.
+/// on every exit code (ignoring `--result-file`), simulating a partial dump left behind by
+/// a failing mysqldump; prints `stderr` to stderr, exits `exit_code`.
 #[doc(hidden)]
 pub fn fake_script(dir: &Path, sql_out: &Path, exit_code: i32, stderr: &str) -> PathBuf {
     let script = dir.join(format!("fake-mysqldump-{exit_code}.cmd"));
     let mut body = String::from("@echo off\r\n");
-    if exit_code == 0 {
-        body.push_str(&format!("echo -- fake dump> \"{}\"\r\n", sql_out.display()));
-    }
+    body.push_str(&format!("echo -- fake dump> \"{}\"\r\n", sql_out.display()));
     if !stderr.is_empty() {
         body.push_str(&format!("echo {stderr} 1>&2\r\n"));
     }

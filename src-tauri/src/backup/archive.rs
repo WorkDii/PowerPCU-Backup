@@ -76,4 +76,14 @@ mod tests {
         assert!(archive.by_name_decrypt("x.sql", b"wrong").is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    #[test]
+    fn failure_removes_partial_zip() {
+        let d = temp("missing");
+        let sql = d.join("missing.sql");
+        let zip_path = d.join("missing.zip");
+        assert!(compress_to_zip(&sql, "missing.sql", "pw").is_err());
+        assert!(!zip_path.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
