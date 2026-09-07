@@ -19,7 +19,7 @@
 
 - exe เดียว 2 โหมด: `--service` (headless) และ GUI (Tauri)
 - ปลายทาง `local` และ `s3`
-- แผน (plan) หลายแผน 1 แผน = 1 ฐานข้อมูล ผูกปลายทางได้หลายอัน (M:N)
+- แผน (plan) หลายแผน 1 แผน = 1 ฐานข้อมูล ผูกปลายทางได้หลายอัน (M:N) และ**หลายแผนชี้ฐานเดียวกันได้** (เช่น แผนของส่วนกลางกับแผนของ รพ.สต. ที่ใช้รหัส zip, retention, ปลายทาง, เวลา ต่างกัน ดู §5.2)
 - schedule แบบง่ายใน UI แปลงเป็น cron เวลาท้องถิ่น
 - retention keep-by-rule แบบ restic + prune หลังรันสำเร็จเท่านั้น
 - ประวัติการรัน + ไฟล์ต่อรัน
@@ -215,6 +215,24 @@ CREATE INDEX idx_backup_files_live ON backup_files(plan_id, storage_id, deleted_
 - ลบ plan → ลบ `plan_storages` ของมัน; `runs`/`backup_files` เก็บไว้เป็นประวัติ ไฟล์จริงไม่ถูกลบ
 - `runs` เก่ากว่า 90 วันถูกลบหลังทุกรัน (แถว `backup_files` ที่อ้างถึง run นั้นยังอยู่)
 
+### 5.2 หลาย plan บนฐานเดียวกัน
+
+กรณีจริง: ส่วนกลางต้องการสำเนาขึ้น S3 กลางด้วยรหัส zip และ retention ของส่วนกลาง ขณะที่ รพ.สต. เก็บสำเนาไว้ในเครื่องด้วยรหัสของตัวเอง
+
+| | plan "ส่วนกลาง" | plan "รพ.สต." |
+|---|---|---|
+| ฐานข้อมูล | jhcisdb (host/port/user เดียวกัน) | jhcisdb |
+| ปลายทาง | S3 ส่วนกลาง | โฟลเดอร์/NAS |
+| รหัส zip | ของส่วนกลาง | ของ รพ.สต. |
+| retention | เช่น 7/8/36/10 | เช่น 14/4/6/0 |
+| เวลา | 03:30 | 20:00 |
+
+ทำได้ด้วย model ปัจจุบันโดยไม่เปลี่ยนตาราง: 2 แถวใน `plans` ราคาคือ mysqldump รัน 2 ครั้ง (ยอมรับ ไม่ทำ dump-once-encrypt-many เพราะต้องย้ายรหัส/retention ไปไว้ที่การผูกปลายทาง) สิ่งที่ต้องมีเพิ่ม 3 อย่าง:
+
+1. **dump ทีละ 1**: semaphore ระดับโปรแกรมขนาด 1 ครอบขั้น mysqldump (§6 ข้อ 4.5) plan ที่ชนเวลากันรอคิว ไม่ dump พร้อมกัน
+2. **กันชื่อไฟล์ชน**: ห้ามสอง plan ที่มี (`prefix_name`, `database_name`) เท่ากันผูกปลายทางเดียวกัน (§10 validation) มิฉะนั้นจะเขียนทับที่ `<prefix>/<db>/<base>.zip` แล้ว prune ของอีก plan ลบทิ้ง
+3. **ทำสำเนาแผน**: ปุ่มบน dashboard สร้าง plan ใหม่จากการเชื่อมต่อของแผนเดิม (§11) รหัสฐานข้อมูลคัดลอกฝั่ง server ผ่าน `copy_password_from_plan_id` เพราะ API ไม่ส่งรหัสออกมา
+
 ### รูปแบบชื่อและที่อยู่ไฟล์
 
 - `base = {prefix_name}_{database_name}_{YYMMDDHHmm}` (เวลาท้องถิ่น) ตรงกับ v1; `prefix_name` = รหัส/ชื่อย่อหน่วยบริการ (อักษร ตัวเลข `_` `-` เท่านั้น)
@@ -229,6 +247,7 @@ CREATE INDEX idx_backup_files_live ON backup_files(plan_id, storage_id, deleted_
 2. `runs` แถวใหม่ `status='running'`
 3. โหลด plan + storages ที่ผูก ไม่มี storage → ปิด run `failed` "แผนนี้ยังไม่ได้เลือกที่จัดเก็บ"
 4. ถอดรหัส `password`, `encryption_password` (DPAPI)
+   - 4.5 ขอ **semaphore dump ระดับโปรแกรม (1 ที่)** ถ้า plan อื่นกำลัง dump อยู่ → รอ (run ยังสถานะ `running`, `message` ชั่วคราว "รอคิว dump") ปล่อยทันทีที่ขั้น 5 จบ
 5. `mysqldump <db> --single-transaction --routines --events --triggers --result-file=<temp.sql> --host --port --user` รหัสผ่านผ่าน env `MYSQL_PWD` ล้มเหลว → ลบ temp, ปิด run `failed` พร้อม stderr
 6. zip (Zstd level 3 + AES-256 + ZIP64) → ลบ `.sql`
 7. ต่อ storage: `provider.store(zip, rel_path)` สำเร็จ → บันทึก `backup_files`; ล้มเหลว → เก็บข้อความ
@@ -310,8 +329,9 @@ pub trait Provider {
 | `POST /api/storages/{id}/test` | `{ok,message}` ใช้ค่าที่บันทึกไว้ |
 | `POST /api/storages/test` | `{provider,config,storage_id?}` → `{ok,message}` ทดสอบก่อนบันทึก (secret ว่าง + `storage_id` = ใช้ของเดิม) |
 | `GET /api/plans` | `[{…plan (password/encryption_password masked ""), storage_ids:[..]}]` |
-| `POST /api/plans` | `{name,database_name,host,port,username,password,prefix_name,encryption_password,schedule_cron,active,catch_up,keep_daily,keep_weekly,keep_monthly,keep_yearly,storage_ids}` → `{ok,id}` ต้องมี storage ≥1, รหัส zip ≥ 8 ตัว |
+| `POST /api/plans` | `{name,database_name,host,port,username,password,prefix_name,encryption_password,schedule_cron,active,catch_up,keep_daily,keep_weekly,keep_monthly,keep_yearly,storage_ids,copy_password_from_plan_id?}` → `{ok,id}` ต้องมี storage ≥1, รหัส zip ≥ 8 ตัว; `password` ว่าง + `copy_password_from_plan_id` = คัดลอก blob รหัสฐานข้อมูลจากแผนนั้นฝั่ง server |
 | `PUT /api/plans/{id}` | เหมือน POST; รหัสว่าง = คงเดิม; แทนที่ `plan_storages`; re-register scheduler |
+| (validation POST/PUT) | ห้ามมี plan อื่นที่ (`prefix_name`, `database_name`) เท่ากันและมี `storage_id` ร่วมกัน → `{ok:false, message:"แผน '<ชื่อ>' ใช้รหัสหน่วยบริการ+ฐานข้อมูลเดียวกันบนปลายทาง '<ชื่อ>' อยู่แล้ว เปลี่ยนรหัสหน่วยบริการหรือปลายทาง"}` |
 | `DELETE /api/plans/{id}` | `{ok}` |
 | `POST /api/plans/{id}/run` | `{ok,message}` (คืนทันที รันเบื้องหลัง) |
 | `POST /api/plans/test-connection` | `{host,port,username,password,database_name,plan_id?}` → `{ok,message}` ใช้ `mysqldump --no-data --skip-triggers --skip-routines --skip-events --result-file=<temp>` แล้วลบ (ทดสอบทั้ง binary และสิทธิ์จริง) |
@@ -334,7 +354,8 @@ pub trait Provider {
    2. ปลายทาง: เพิ่มโฟลเดอร์ (พิมพ์ path, default `C:\PowerPCU-Backup`) และ/หรือ S3 ทดสอบได้ ต้องมี ≥1
    3. เวลาและรหัส: default "ทุกวัน 03:30", รหัสเข้ารหัส zip (บังคับ ≥8 ตัว, ช่องยืนยัน, เตือนว่าลืมแล้วเปิดไฟล์ไม่ได้ ให้จดไว้), `prefix_name` = "รหัส/ชื่อย่อหน่วยบริการ" บังคับกรอก ไม่มี default (เช่น `10999`) เพราะเป็นโฟลเดอร์แรกในปลายทางที่หลายหน่วยใช้ bucket ร่วมกัน (ความหมายเดียวกับ `PREFIX_NAME` ของ v1)
    → สร้าง storages + plan → ถาม "สำรองเลยตอนนี้?"
-2. **Dashboard** (`#/`): การ์ดต่อ plan: ชื่อ, สถานะล่าสุด (สี), เวลาล่าสุด, รอบถัดไป, ปุ่ม "รันตอนนี้" / "แก้ไข" / "ประวัติ"; แถบล่างสุด version service; poll `/api/status` ทุก 5 วิเมื่อมี `running` ไม่งั้น 30 วิ
+2. **Dashboard** (`#/`): การ์ดต่อ plan: ชื่อ, สถานะล่าสุด (สี), เวลาล่าสุด, รอบถัดไป, ปุ่ม "รันตอนนี้" / "แก้ไข" / "ประวัติ" / "ทำสำเนาแผน"; ปุ่ม "สร้างแผนใหม่"; แถบล่างสุด version service; poll `/api/status` ทุก 5 วิเมื่อมี `running` ไม่งั้น 30 วิ
+   - **ทำสำเนาแผน** → `#/plans/new?from=<id>`: เติม host/port/username/database/prefix จากแผนเดิม ช่องรหัสฐานข้อมูลว่างพร้อมข้อความ "ใช้รหัสเดียวกับแผน '<ชื่อ>'" (ส่ง `copy_password_from_plan_id`); ชื่อแผน, ปลายทาง, รหัส zip, retention, เวลา ให้กรอกใหม่ (ปลายทางไม่ติ๊กไว้ก่อน เพื่อไม่ให้ชน validation §10)
 3. **ปลายทาง** (`#/storages`): ตาราง + ฟอร์ม inline (local: path; s3: endpoint, region, bucket, access key, secret, prefix, path-style) + ทดสอบ + ลบ (แสดงเหตุผลถ้าลบไม่ได้)
 4. **แผน** (`#/plans/new`, `#/plans/:id`): ข้อมูลฐาน (+ทดสอบ), ปลายทาง (checkbox หลายอัน), ตารางเวลา (ดู builder ด้านล่าง), retention: ช่องเดียว "เก็บสำเนาล่าสุด 14 ชุด" + พับ "ขั้นสูง": รายสัปดาห์ 12 / รายเดือน 24 / รายปีงบ 5 + `catch_up` + `active`
 5. **ประวัติ** (`#/history/:planId`): ตาราง runs (สถานะ, trigger, เวลา, ระยะเวลา, ขนาด, ข้อความ) คลิกดูไฟล์: ปลายทาง, ที่อยู่, ขนาด, ป้าย "เก็บในฐานะ…", ลบแล้ว/ยังอยู่
@@ -400,6 +421,8 @@ Rust (`cargo test` บน Windows)
 - `prune::decide`: (1) ชุดวันละไฟล์ 3 ปี keep 14/12/24/5 → จำนวนและเหตุผลถูก, (2) ข้ามเสาร์-อาทิตย์ → weekly = ศุกร์, (3) ไฟล์ล่าสุดอยู่เสมอ, (4) keep ทั้งหมด 0 → ไม่ลบ, (5) ปีงบ: ไฟล์ 30 ก.ย. และ 1 ต.ค. อยู่คนละปี, (6) หลายไฟล์ในวันเดียวเก็บใหม่สุด
 - `files`: prune ของ plan A ไม่แตะแถวของ plan B บน storage เดียวกัน; delete NotFound = ตั้ง `deleted_at`
 - `schedule`: `"0 " + cron` mapping; cron ผิด → skip; catch-up เงื่อนไข 24 ชม.
+- `run`: 2 plan รันพร้อมกันกับ mysqldump ปลอมที่ sleep → ช่วง dump ไม่ทับกัน (semaphore)
+- `plans`: validation คู่ (prefix, db, storage) ซ้ำข้ามแผน → `ok:false`; `copy_password_from_plan_id` คัดลอก blob ได้และถอดรหัสแล้วตรงกัน
 - `storages`: mask/คงค่า secret; ลบถูกบล็อกเมื่อใช้อยู่
 - `secret`: DPAPI round-trip; ค่า `dpapi:` เสีย → error ไทย
 - `storage::local`: store แล้ว delete บน temp dir
